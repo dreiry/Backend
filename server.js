@@ -309,7 +309,6 @@ app.post('/api/upload/:type', upload.single('file'), async (req, res) => {
         }
         
         // I-convert ang sheet sa JSON
-        // I-convert ang sheet sa JSON
         const rawData = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
         
         // DITO NATIN I-FI-FILTER ANG MGA GHOST ROWS!
@@ -326,6 +325,8 @@ app.post('/api/upload/:type', upload.single('file'), async (req, res) => {
         if (data.length === 0) return res.status(400).json({ error: 'The sheet is empty or contains only blank rows.' });
 
         // Ito dapat ay INSERT queries para mai-save ang data sa database
+        let query = '';
+        let values = [];
         switch (type) {
             case 'faculty':
                 query = `INSERT IGNORE INTO faculty (faculty_id, name, employment_type, official_time_start, official_time_end, expertise_tags, seniority_level, preferred_shift, max_preparations) VALUES ?`;
@@ -481,6 +482,86 @@ app.put('/api/data/:type/:id', async (req, res) => {
     } catch (error) {
         console.error('Update Error:', error);
         res.status(500).json({ error: 'Failed to update record in the database.' });
+    }
+});
+
+// --- EXPORT REPORTS ENDPOINT ---
+app.get('/api/reports/export', async (req, res) => {
+    const { reportType } = req.query;
+    
+    let query = '';
+    let filename = '';
+
+    // Filter exactly which columns to pull based on the requested report
+    switch (reportType) {
+        case 'master-schedule':
+            query = `
+                SELECT 
+                    gs.schedule_id AS 'Schedule ID', 
+                    c.description AS 'Course Description', 
+                    s.section_id AS 'Section', 
+                    f.name AS 'Faculty Name', 
+                    r.room_id AS 'Room', 
+                    t.day AS 'Day', 
+                    t.start_time AS 'Start Time', 
+                    t.end_time AS 'End Time'
+                FROM generated_schedules gs
+                LEFT JOIN courses c ON gs.course_code = c.course_code
+                LEFT JOIN sections s ON gs.section_id = s.section_id
+                LEFT JOIN faculty f ON gs.faculty_id = f.faculty_id
+                LEFT JOIN rooms r ON gs.room_id = r.room_id
+                LEFT JOIN timeslots t ON gs.timeslot_id = t.timeslot_id
+            `;
+            filename = 'Master_Department_Schedule';
+            break;
+
+        case 'faculty-load':
+            query = 'SELECT faculty_id AS "Faculty ID", name AS "Name", employment_type AS "Employment Type", official_time_start AS "Time Start", official_time_end AS "Time End", max_preparations AS "Max Preps" FROM faculty';
+            filename = 'Faculty_Workload_Report';
+            break;
+
+        case 'room-utilization':
+            query = 'SELECT room_id AS "Room ID", room_type AS "Room Type", capacity AS "Capacity" FROM rooms';
+            filename = 'Room_Timetable_Matrix';
+            break;
+
+        case 'sections':
+            query = 'SELECT section_id AS "Section ID", program AS "Program", year_level AS "Year Level", semester AS "Semester", student_count AS "Student Count" FROM sections';
+            filename = 'Sections_Report';
+            break;
+
+        case 'courses':
+            query = 'SELECT course_code AS "Course Code", description AS "Description", lec_hours AS "Lec Hours", lab_hours AS "Lab Hours", program_owner AS "Program Owner", year_level AS "Year Level", semester AS "Semester", department_owner AS "Department Owner" FROM courses';
+            filename = 'Courses_Report';
+            break;
+
+        default:
+            return res.status(400).json({ error: 'Invalid report type requested.' });
+    }
+
+    try {
+        const [rows] = await db.execute(query);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ message: 'No data found for this report.' });
+        }
+
+        // Convert database rows to Excel format
+        const worksheet = xlsx.utils.json_to_sheet(rows);
+        const workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Report');
+
+        const excelBuffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        // Send file to browser for download
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        
+        return res.send(excelBuffer);
+
+    } catch (error) {
+        console.error('Export Error:', error);
+        res.status(500).json({ error: 'Failed to generate the report.' });
     }
 });
 
